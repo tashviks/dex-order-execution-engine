@@ -3,46 +3,49 @@ import { OrderRequest, OrderStatus, OrderState } from '../types';
 import { MockDexRouter } from './mockDexRouter';
 import { WebSocket } from 'ws';
 
-const redisOptions = { host: 'localhost', port: 6379 };
+// Redis Config - CHANGED: Use 127.0.0.1 to avoid Node.js IPv6 localhost issues
+const redisOptions = { 
+  host: '127.0.0.1', 
+  port: 6379,
+  maxRetriesPerRequest: null
+};
 
 export class OrderQueueService {
   private queue: Queue;
   private worker: Worker;
   private router: MockDexRouter;
-  // In-memory map for active WebSocket connections
   private activeConnections: Map<string, WebSocket>;
 
   constructor(activeConnections: Map<string, WebSocket>) {
+    console.log('🔌 Initializing Queue Service...'); // Debug Log
     this.router = new MockDexRouter();
     this.activeConnections = activeConnections;
 
     // 1. Initialize Queue
     this.queue = new Queue('order-execution-queue', { connection: redisOptions });
 
-    // 2. Initialize Worker with Concurrency & Rate Limiting
+    // 2. Initialize Worker
     this.worker = new Worker('order-execution-queue', async (job: Job) => {
       await this.processOrder(job);
     }, {
       connection: redisOptions,
-      concurrency: 10, // Requirement: Process 10 concurrent orders
+      concurrency: 10,
       limiter: {
-        max: 100,      // Requirement: 100 orders per minute
+        max: 100,
         duration: 60000
       }
     });
 
-    this.worker.on('failed', (job, err) => {
-      if (job) this.updateStatus(job.data.orderId, OrderStatus.FAILED, { error: err.message });
-    });
+    // Error Listeners
+    this.worker.on('error', (err) => console.error('❌ Worker connection error:', err.message));
+    this.queue.on('error', (err) => console.error('❌ Queue connection error:', err.message));
+    this.worker.on('ready', () => console.log('✅ Worker connected to Redis'));
   }
 
   async addOrder(order: OrderRequest & { orderId: string }) {
     await this.queue.add('execute-swap', order, {
-      attempts: 3, // Requirement: Exponential back-off retry
-      backoff: {
-        type: 'exponential',
-        delay: 1000
-      }
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 1000 }
     });
     this.updateStatus(order.orderId, OrderStatus.PENDING, { logs: ['Order queued'] });
   }
@@ -51,48 +54,39 @@ export class OrderQueueService {
     const { orderId, tokenIn, tokenOut, amount } = job.data;
 
     try {
-      // Step 1: Routing
-      this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Fetching quotes from Raydium & Meteora...'] });
+      this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Fetching quotes...'] });
       const bestQuote = await this.router.findBestRoute(tokenIn, tokenOut, amount);
       
       this.updateStatus(orderId, OrderStatus.ROUTING, { 
         venue: bestQuote.venue,
-        logs: [`Best route found: ${bestQuote.venue} @ $${bestQuote.price.toFixed(4)}`] 
+        logs: [`Best route: ${bestQuote.venue} @ $${bestQuote.price.toFixed(4)}`] 
       });
 
-      // Step 2: Building Transaction
       this.updateStatus(orderId, OrderStatus.BUILDING, { logs: ['Constructing transaction...'] });
       await new Promise(r => setTimeout(r, 500)); 
 
-      this.updateStatus(orderId, OrderStatus.SUBMITTED, { logs: ['Transaction sent to Solana network...'] });
+      this.updateStatus(orderId, OrderStatus.SUBMITTED, { logs: ['Transaction sent...'] });
       
       const result = await this.router.executeSwap(bestQuote.venue, amount);
       
       this.updateStatus(orderId, OrderStatus.CONFIRMED, {
         txHash: result.txHash,
         executionPrice: result.executedPrice,
-        logs: ['Transaction confirmed on-chain']
+        logs: ['Transaction confirmed']
       });
 
     } catch (error: any) {
+      console.error(`Job ${job.id} failed:`, error);
       throw error;
     }
   }
 
   private updateStatus(orderId: string, status: OrderStatus, data: Partial<OrderState> = {}) {
     const ws = this.activeConnections.get(orderId);
-    
-    const payload = {
-      orderId,
-      status,
-      timestamp: new Date().toISOString(),
-      ...data
-    };
-
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    } else {
-      console.log(`[Queue] No active WS for order ${orderId}, status: ${status}`);
+      ws.send(JSON.stringify({
+        orderId, status, timestamp: new Date().toISOString(), ...data
+      }));
     }
   }
 }

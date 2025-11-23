@@ -1,103 +1,120 @@
-import { Queue, Worker, Job } from 'bullmq';
-import { OrderRequest, OrderStatus, OrderState } from './types';
-import { MockDexRouter } from './services/mockDexRouter';
+import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
+import websocket from '@fastify/websocket';
+import { v4 as uuidv4 } from 'uuid';
+import { OrderQueueService } from './services/queue';
+import { OrderRequest, OrderStatus } from './types';
 import { WebSocket } from 'ws';
 
-// Redis Config
-const redisOptions = { host: 'localhost', port: 6379 };
+console.log('🚀 Starting Order Execution Engine (Fastify v5 Mode)...');
 
-export class OrderQueueService {
-  private queue: Queue;
-  private worker: Worker;
-  private router: MockDexRouter;
-  // In-memory map for active WebSocket connections (for demo simplicity)
-  private activeConnections: Map<string, WebSocket>;
+// State
+const activeConnections = new Map<string, WebSocket>();
 
-  constructor(activeConnections: Map<string, WebSocket>) {
-    this.router = new MockDexRouter();
-    this.activeConnections = activeConnections;
+// Initialize Fastify
+const fastify = Fastify({ logger: true });
 
-    // 1. Initialize Queue
-    this.queue = new Queue('order-execution-queue', { connection: redisOptions });
+const initializeServer = async () => {
+  try {
+    // Register WebSocket plugin BEFORE defining routes
+    console.log('🔌 Registering WebSocket plugin...');
+    await fastify.register(websocket);
 
-    // 2. Initialize Worker with Concurrency & Rate Limiting
-    this.worker = new Worker('order-execution-queue', async (job: Job) => {
-      await this.processOrder(job);
-    }, {
-      connection: redisOptions,
-      concurrency: 10, // Requirement: Process 10 concurrent orders
-      limiter: {
-        max: 100,      // Requirement: 100 orders per minute
-        duration: 60000
+    const queueService = new OrderQueueService(activeConnections);
+
+    // HTTP Route - POST to submit orders
+    fastify.post<{ Body: Omit<OrderRequest, 'userId'> }>(
+      '/api/orders/execute',
+      async (request, reply) => {
+        const orderId = uuidv4();
+        const { tokenIn, tokenOut, amount } = request.body;
+        const userId = 'user_123';
+
+        await queueService.addOrder({
+          orderId,
+          tokenIn,
+          tokenOut,
+          amount,
+          userId,
+        });
+
+        return reply.status(202).send({
+          message: 'Order received',
+          orderId,
+          wsUrl: `ws://localhost:3000/api/orders/${orderId}/status`,
+        });
       }
-    });
+    );
 
-    // Worker Event Listeners
-    this.worker.on('failed', (job, err) => {
-      if (job) this.updateStatus(job.data.orderId, OrderStatus.FAILED, { error: err.message });
-    });
-  }
+    // WebSocket Route - GET to establish WebSocket connection
+    interface OrderParams {
+      orderId: string;
+    }
 
-  async addOrder(order: OrderRequest & { orderId: string }) {
-    await this.queue.add('execute-swap', order, {
-      attempts: 3, // Requirement: Exponential back-off retry
-      backoff: {
-        type: 'exponential',
-        delay: 1000
+    fastify.get<{ Params: OrderParams }>(
+      '/api/orders/:orderId/status',
+      { websocket: true },
+      async (connection, req) => {
+        const request = req as FastifyRequest<{ Params: OrderParams }>;
+        const { orderId } = request.params;
+
+        if (!orderId) {
+          console.error('❌ Order ID not provided');
+          connection.socket.close(1008, 'Order ID required');
+          return;
+        }
+
+        console.log(`✅ Client connected for order: ${orderId}`);
+        activeConnections.set(orderId, connection.socket);
+
+        // Send initial connection message
+        connection.socket.send(
+          JSON.stringify({
+            orderId,
+            status: OrderStatus.PENDING,
+            message: 'Connection established. Waiting for order execution...',
+          })
+        );
+
+        // Handle incoming messages
+        connection.socket.on('message', (data) => {
+          console.log(`📨 Message from ${orderId}:`, data.toString());
+        });
+
+        // Handle connection close
+        connection.socket.on('close', () => {
+          console.log(`🔌 Client disconnected: ${orderId}`);
+          activeConnections.delete(orderId);
+        });
+
+        // Handle errors
+        connection.socket.on('error', (err) => {
+          console.error(`❌ WebSocket error for ${orderId}:`, err.message);
+          activeConnections.delete(orderId);
+        });
       }
+    );
+
+    // Health check endpoint
+    fastify.get('/health', async (request, reply) => {
+      return reply.status(200).send({
+        status: 'healthy',
+        uptime: process.uptime(),
+        activeConnections: activeConnections.size,
+      });
     });
-    this.updateStatus(order.orderId, OrderStatus.PENDING, { logs: ['Order queued'] });
+
+    // Start server
+    console.log('⏳ Attempting to listen on port 3000...');
+    await fastify.listen({ port: 3000, host: '0.0.0.0' });
+    console.log('✅ Order Engine running on port 3000');
+    console.log('📝 POST /api/orders/execute - Submit orders');
+    console.log('🔌 WS /api/orders/:orderId/status - WebSocket status updates');
+    console.log('❤️  GET /health - Health check');
+  } catch (err) {
+    fastify.log.error(err);
+    process.exit(1);
   }
+};
 
-  private async processOrder(job: Job) {
-    const { orderId, tokenIn, tokenOut, amount } = job.data;
-
-    try {
-      // Step 1: Routing
-      this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Fetching quotes from Raydium & Meteora...'] });
-      const bestQuote = await this.router.findBestRoute(tokenIn, tokenOut, amount);
-      
-      this.updateStatus(orderId, OrderStatus.ROUTING, { 
-        venue: bestQuote.venue,
-        logs: [`Best route found: ${bestQuote.venue} @ $${bestQuote.price.toFixed(4)}`] 
-      });
-
-      // Step 2: Building Transaction
-      this.updateStatus(orderId, OrderStatus.BUILDING, { logs: ['Constructing transaction...'] });
-      // In real devnet, this is where we'd create the VersionedTransaction
-      await new Promise(r => setTimeout(r, 500)); 
-
-      // Step 3: Submission
-      this.updateStatus(orderId, OrderStatus.SUBMITTED, { logs: ['Transaction sent to Solana network...'] });
-      
-      // Step 4: Confirmation / Settlement
-      const result = await this.router.executeSwap(bestQuote.venue, amount);
-      
-      this.updateStatus(orderId, OrderStatus.CONFIRMED, {
-        txHash: result.txHash,
-        executionPrice: result.executedPrice,
-        logs: ['Transaction confirmed on-chain']
-      });
-
-    } catch (error: any) {
-      throw error; // Triggers BullMQ retry
-    }
-  }
-
-  private updateStatus(orderId: string, status: OrderStatus, data: Partial<OrderState> = {}) {
-    const ws = this.activeConnections.get(orderId);
-    
-    const payload = {
-      orderId,
-      status,
-      timestamp: new Date().toISOString(),
-      ...data
-    };
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(payload));
-    } else {
-      console.log(`[Queue] No active WS for order ${orderId}, status: ${status}`);
-    }
-  }
-}
+// Start the server
+initializeServer();
