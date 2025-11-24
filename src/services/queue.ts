@@ -1,99 +1,82 @@
 import { Queue, Worker, Job } from 'bullmq';
 import { OrderRequest, OrderStatus, OrderState } from '../types';
-import { MockDexRouter } from './mockDexRouter';
+import { SolanaDexRouter } from './SolDevRouter'; 
 import { WebSocket } from 'ws';
+import IORedis from 'ioredis';
+import * as dotenv from 'dotenv';
+dotenv.config();
 
-// Redis Config - CHANGED: Use 127.0.0.1 to avoid Node.js IPv6 localhost issues
-const redisOptions = { 
-  host: '127.0.0.1', 
-  port: 6379,
-  maxRetriesPerRequest: null
-};
-let attemptCounter = 0;
 export class OrderQueueService {
   private queue: Queue;
   private worker: Worker;
-  private router: MockDexRouter;
+  private router: SolanaDexRouter; // CHANGED: Type
   private activeConnections: Map<string, WebSocket>;
 
   constructor(activeConnections: Map<string, WebSocket>) {
-    console.log('🔌 Initializing Queue Service...'); // Debug Log
-    this.router = new MockDexRouter();
+    console.log('🔌 Initializing Queue Service (Devnet Mode)...');
+    
+    this.router = new SolanaDexRouter(); 
     this.activeConnections = activeConnections;
 
-    // 1. Initialize Queue
-    this.queue = new Queue('order-execution-queue', { connection: redisOptions });
+    const connection = process.env.REDIS_URL 
+      ? new IORedis(process.env.REDIS_URL, { maxRetriesPerRequest: null }) 
+      : { host: '127.0.0.1', port: 6379, maxRetriesPerRequest: null };
 
-    // 2. Initialize Worker
+    this.queue = new Queue('order-execution-queue', { connection });
+
     this.worker = new Worker('order-execution-queue', async (job: Job) => {
       await this.processOrder(job);
     }, {
-      connection: redisOptions,
-      concurrency: 10,
+      connection,
+      concurrency: 5, 
       limiter: {
-        max: 100,
-        duration: 60000
+        max: 10,    
+        duration: 1000
       }
     });
 
-    // Error Listeners
-    this.worker.on('error', (err) => console.error(':( Worker connection error:', err.message));
-    this.queue.on('error', (err) => console.error(':( Queue connection error:', err.message));
-    this.worker.on('ready', () => console.log(':) Worker connected to Redis'));
+    this.worker.on('error', (err) => console.error('❌ Worker connection error:', err.message));
+    this.worker.on('ready', () => console.log('✅ Worker connected to Redis'));
   }
 
   async addOrder(order: OrderRequest & { orderId: string }) {
     await this.queue.add('execute-swap', order, {
       attempts: 3,
-      backoff: { type: 'exponential', delay: 1000 }
+      backoff: { type: 'exponential', delay: 2000 }
     });
     this.updateStatus(order.orderId, OrderStatus.PENDING, { logs: ['Order queued'] });
   }
 
   private async processOrder(job: Job) {
     const { orderId, tokenIn, tokenOut, amount } = job.data;
-
     try {
-    console.log(`⏳ Job ${orderId} waiting 10 seconds for user to connect...`); // this is for test purposes to view the messages
-    await new Promise(resolve => setTimeout(resolve, 10000));
-
-    attemptCounter++;
-    console.log(`🔄 Execution Attempt #${attemptCounter}`);
-
-    // SIMULATE FAILURE for the first 2 attempts to test retry in backoff 
-    if (attemptCounter < 3) {
-      throw new Error("Simulated Network Error (Raydium API Down)");
-    }
-
-      this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Fetching quotes...'] });
+      this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Checking Devnet Liquidity...'] });
+      
+      // REAL: Calls the SolanaRouter to check balance/price
       const bestQuote = await this.router.findBestRoute(tokenIn, tokenOut, amount);
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
       
       this.updateStatus(orderId, OrderStatus.ROUTING, { 
         venue: bestQuote.venue,
-        logs: [`Best route: ${bestQuote.venue} @ $${bestQuote.price.toFixed(4)}`] 
+        logs: [`Route Selected: ${bestQuote.venue} (Price: $${bestQuote.price.toFixed(2)})`] 
       });
 
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      this.updateStatus(orderId, OrderStatus.BUILDING, { logs: ['Constructing transaction...'] });
-      await new Promise(r => setTimeout(r, 500)); 
-
-      this.updateStatus(orderId, OrderStatus.SUBMITTED, { logs: ['Transaction sent...'] });
-
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      this.updateStatus(orderId, OrderStatus.BUILDING, { logs: ['Building & Signing Transaction...'] });
       
+      // REAL: Submits transaction to the blockchain
       const result = await this.router.executeSwap(bestQuote.venue, amount);
       
       this.updateStatus(orderId, OrderStatus.CONFIRMED, {
         txHash: result.txHash,
         executionPrice: result.executedPrice,
-        logs: ['Transaction confirmed']
+        logs: [`Confirmed on Devnet! Hash: ${result.txHash.substring(0, 8)}...`]
       });
 
     } catch (error: any) {
-      console.error(`Job ${job.id} failed:`, error);
+      console.error(`Job ${job.id} failed:`, error.message);
+      this.updateStatus(orderId, OrderStatus.FAILED, { 
+        error: error.message,
+        logs: [`Failed: ${error.message}`] 
+      });
       throw error;
     }
   }
