@@ -40,7 +40,7 @@ const initializeServer = async () => {
         return reply.status(202).send({
           message: 'Order received',
           orderId,
-          wsUrl: `ws://localhost:3000/api/orders/${orderId}/status`,
+          wsUrl: `https://dex-order-execution-engine-app.onrender.com/api/orders/${orderId}/status`,
         });
       }
     );

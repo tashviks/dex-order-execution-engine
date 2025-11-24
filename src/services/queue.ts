@@ -50,6 +50,9 @@ export class OrderQueueService {
   private async processOrder(job: Job) {
     const { orderId, tokenIn, tokenOut, amount } = job.data;
     try {
+      console.log(`⏳ Job ${orderId} waiting 20 seconds for user to connect to ws...`); // this is for test purposes to view the messages
+      await new Promise(resolve => setTimeout(resolve, 20000));
+      
       this.updateStatus(orderId, OrderStatus.ROUTING, { logs: ['Checking Devnet Liquidity...'] });
       
       // REAL: Calls the SolanaRouter to check balance/price
