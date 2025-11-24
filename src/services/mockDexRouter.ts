@@ -1,5 +1,5 @@
     
-    import { Quote, OrderState } from '../types';
+    import { Quote } from '../types';
 
     export class MockDexRouter {
     private basePriceMap: Record<string, number> = {

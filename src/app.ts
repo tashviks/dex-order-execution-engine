@@ -1,4 +1,4 @@
-import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
+import Fastify, { FastifyRequest } from 'fastify';
 import websocket from '@fastify/websocket';
 import { v4 as uuidv4 } from 'uuid';
 import { OrderQueueService } from './services/queue';
