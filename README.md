@@ -70,3 +70,8 @@ API Endpoints
         "status": "pending",
         "message": "Connection established. Waiting for order execution..."
     }
+
+
+Render Deployment
+
+![alt text](image.png)
