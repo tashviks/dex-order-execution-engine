@@ -55,9 +55,12 @@ API Endpoints
 -------------
 
 1. Submit Order
-    curl -X POST https://dex-order-execution-engine-app.onrender.com/api/orders/96e1c7c5-2679-4732-b7d2-bd0b632015bb/status/api/orders/execute \
-    -H "Content-Type: application/json" \
-    -d '{"tokenIn": "SOL", "tokenOut": "USDC", "amount": 1}'
+    curl --location 'https://dex-order-execution-engine-app.onrender.com/api/orders/execute' \
+--header 'Content-Type: application/json' \
+--data '{"tokenIn": "SOL", "tokenOut": "SOL", "amount": 1}'
+
+2. Get Order Status via Websocket
+    https://dex-order-execution-engine-app.onrender.com/api/orders/145a142c-c74c-46fa-a6c5-d21a0dd5a212/status
 
 
 2. WebSocket Response Example
