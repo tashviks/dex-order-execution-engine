@@ -1,0 +1,67 @@
+{
+  "info": {
+    "_postman_id": "d153ec5d-84db-411f-91e5-a05ce6bd914d",
+    "name": "Postman Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Execute Order",
+      "id": "faacd630-df3d-4f33-98eb-74a8063d35b0",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\"tokenIn\": \"SOL\", \"tokenOut\": \"SOL\", \"amount\": 1}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://dex-order-execution-engine-app.onrender.com/api/orders/execute",
+          "protocol": "https",
+          "host": [
+            "dex-order-execution-engine-app",
+            "onrender",
+            "com"
+          ],
+          "path": [
+            "api",
+            "orders",
+            "execute"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Order Status : Chage to Websocket in a new tab",
+      "id": "f1d536f7-0516-49b7-98db-55e2a8489a5d",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "https://dex-order-execution-engine-app.onrender.com/api/orders/a4dd7003-906a-4a7b-9194-0cb5616184db/status",
+          "protocol": "https",
+          "host": [
+            "dex-order-execution-engine-app",
+            "onrender",
+            "com"
+          ],
+          "path": [
+            "api",
+            "orders",
+            "a4dd7003-906a-4a7b-9194-0cb5616184db",
+            "status"
+          ]
+        }
+      }
+    }
+  ]
+}
